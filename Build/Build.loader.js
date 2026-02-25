@@ -120,14 +120,16 @@
     if (typeof url === 'string' && url.includes('.wasm') && !url.includes('.part')) {
       console.log('Intercepted .wasm request, returning pre-fetched buffer...');
       return wasmReady.then(function(arr) {
+        // Slice to get a fresh, standalone ArrayBuffer (never detached/shared)
+        var buf = arr.buffer.slice(arr.byteOffset, arr.byteOffset + arr.byteLength);
         return {
           ok: true, status: 200, statusText: 'OK',
           headers: new Headers({ 'Content-Type': 'application/wasm', 'Content-Length': arr.byteLength }),
           body: null,
-          arrayBuffer: function() { return Promise.resolve(arr.buffer || arr); },
-          blob:        function() { return Promise.resolve(new Blob([arr])); },
+          arrayBuffer: function() { return Promise.resolve(buf); },
+          blob:        function() { return Promise.resolve(new Blob([buf])); },
           json:        function() { return Promise.reject(new Error('Not JSON')); },
-          text:        function() { return Promise.resolve(new TextDecoder().decode(arr)); }
+          text:        function() { return Promise.resolve(new TextDecoder().decode(buf)); }
         };
       });
     }
@@ -135,24 +137,17 @@
     return originalFetch.apply(this, arguments);
   };
 
-  // Also override WebAssembly.instantiateStreaming since Unity tries that first
-  // before falling back to fetch
-  var _origInstStreaming = WebAssembly.instantiateStreaming;
+  // Override WebAssembly.instantiateStreaming — Unity calls this first.
+  // We ALWAYS intercept it (any source) and use our pre-fetched wasm buffer.
+  // This is safe because there's only one .wasm file in a Unity build.
   WebAssembly.instantiateStreaming = function(source, imports) {
-    if (typeof source === 'string' || (source && source.url && source.url.includes('.wasm'))) {
-      console.log('WebAssembly.instantiateStreaming intercepted, using pre-fetched wasm...');
-      return wasmReady.then(function(arr) {
-        return WebAssembly.instantiate(arr.buffer || arr, imports);
-      });
-    }
-    // If source is already a Response or Promise<Response>, check if it's our fake one
-    return Promise.resolve(source).then(function(resp) {
-      if (resp && resp.ok && resp.headers && resp.headers.get('Content-Type') === 'application/wasm') {
-        return resp.arrayBuffer().then(function(buf) {
-          return WebAssembly.instantiate(buf, imports);
-        });
-      }
-      return _origInstStreaming ? _origInstStreaming(source, imports) : WebAssembly.instantiate(source, imports);
+    console.log('WebAssembly.instantiateStreaming intercepted, waiting for pre-fetched wasm...');
+    return wasmReady.then(function(arr) {
+      // arr.buffer may be a shared backing buffer if arr is a subarray view.
+      // We must slice it to get a fresh, non-detached ArrayBuffer that
+      // WebAssembly.instantiate will accept.
+      var buf = arr.buffer.slice(arr.byteOffset, arr.byteOffset + arr.byteLength);
+      return WebAssembly.instantiate(buf, imports);
     });
   };
 
