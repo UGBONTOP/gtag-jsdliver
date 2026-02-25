@@ -1,8 +1,8 @@
-// Custom Data File Sub-Part Chunk Loader
+// Custom Data File + WASM Sub-Part Loader
 // Repo: UGBONTOP/gtag-jsdliver
 (function() {
 
-  var CDN = 'https://cdn.jsdelivr.net/gh/UGBONTOP/gtag-jsdliver@main/Build';
+  var CDN = 'https://cdn.jsdelivr.net/gh/UGBONTOP/gtag-jsdliver@refs/heads/main/Build';
 
   var CHUNK_PARTS = {
     0: [
@@ -28,32 +28,43 @@
     ]
   };
 
+  var WASM_PARTS = [
+    CDN + '/Build.wasm.part0',
+    CDN + '/Build.wasm.part1',
+    CDN + '/Build.wasm.part2',
+    CDN + '/Build.wasm.part3'
+  ];
+
+  // Reassemble an array of URLs into a single Uint8Array
+  function fetchAndMerge(urls) {
+    return Promise.all(urls.map(function(url) {
+      return fetch(url).then(function(r) {
+        if (!r.ok) throw new Error('Failed: ' + url + ' (' + r.status + ')');
+        return r.arrayBuffer().then(function(b) { return new Uint8Array(b); });
+      });
+    })).then(function(parts) {
+      var total = parts.reduce(function(s, p) { return s + p.length; }, 0);
+      var merged = new Uint8Array(total);
+      var offset = 0;
+      parts.forEach(function(p) { merged.set(p, offset); offset += p.length; });
+      return merged;
+    });
+  }
+
+  // ── Data file loader ──────────────────────────────────────────────────────
+
   window.unityDataChunkLoader = function(url) {
     return new Promise(function(resolve, reject) {
       console.log('Loading data file via sub-part chunk loader...');
-
       var chunkIdxs = [0, 1, 2];
       var chunks = [];
       var totalSize = 0;
 
       function loadChunk(chunkIndex) {
         return new Promise(function(chunkResolve, chunkReject) {
-          var partUrls = CHUNK_PARTS[chunkIndex];
-          console.log('Loading chunk ' + chunkIndex + ' from ' + partUrls.length + ' parts...');
-
-          var partPromises = partUrls.map(function(partUrl) {
-            return fetch(partUrl).then(function(r) {
-              if (!r.ok) throw new Error('Failed part: ' + partUrl + ' (' + r.status + ')');
-              return r.arrayBuffer().then(function(b) { return new Uint8Array(b); });
-            });
-          });
-
-          Promise.all(partPromises).then(function(parts) {
-            var total = parts.reduce(function(s, p) { return s + p.length; }, 0);
-            var merged = new Uint8Array(total);
-            var offset = 0;
-            parts.forEach(function(p) { merged.set(p, offset); offset += p.length; });
-            console.log('Chunk ' + chunkIndex + ' assembled: ' + total + ' bytes');
+          console.log('Loading chunk ' + chunkIndex + ' from ' + CHUNK_PARTS[chunkIndex].length + ' parts...');
+          fetchAndMerge(CHUNK_PARTS[chunkIndex]).then(function(merged) {
+            console.log('Chunk ' + chunkIndex + ' assembled: ' + merged.length + ' bytes');
             chunks[chunkIndex] = merged;
             totalSize += merged.length;
             chunkResolve();
@@ -75,28 +86,44 @@
     });
   };
 
-  // Intercept fetch for .data files so Unity gets the reassembled data
+  // ── Intercept fetch for .data AND .wasm files ─────────────────────────────
+
   var originalFetch = window.fetch;
   window.fetch = function(url, options) {
+
+    // Intercept .data requests
     if (typeof url === 'string' && url.includes('.data') && !url.includes('.part')) {
-      console.log('Intercepted .data file request, using sub-part chunk loader instead');
-      return window.unityDataChunkLoader(url).then(function(arrayBuffer) {
+      console.log('Intercepted .data request, using sub-part chunk loader...');
+      return window.unityDataChunkLoader(url).then(function(arr) {
         return {
-          ok: true,
-          status: 200,
-          statusText: 'OK',
-          headers: new Headers({
-            'Content-Type': 'application/octet-stream',
-            'Content-Length': arrayBuffer.byteLength
-          }),
+          ok: true, status: 200, statusText: 'OK',
+          headers: new Headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': arr.byteLength }),
           body: null,
-          arrayBuffer: function() { return Promise.resolve(arrayBuffer.buffer || arrayBuffer); },
-          blob: function() { return Promise.resolve(new Blob([arrayBuffer])); },
-          json: function() { return Promise.reject(new Error('Not JSON')); },
-          text: function() { var d = new TextDecoder(); return Promise.resolve(d.decode(arrayBuffer)); }
+          arrayBuffer: function() { return Promise.resolve(arr.buffer || arr); },
+          blob:        function() { return Promise.resolve(new Blob([arr])); },
+          json:        function() { return Promise.reject(new Error('Not JSON')); },
+          text:        function() { return Promise.resolve(new TextDecoder().decode(arr)); }
         };
       });
     }
+
+    // Intercept .wasm requests
+    if (typeof url === 'string' && url.includes('.wasm') && !url.includes('.part')) {
+      console.log('Intercepted .wasm request, reassembling from parts...');
+      return fetchAndMerge(WASM_PARTS).then(function(arr) {
+        console.log('WASM assembled: ' + arr.length + ' bytes');
+        return {
+          ok: true, status: 200, statusText: 'OK',
+          headers: new Headers({ 'Content-Type': 'application/wasm', 'Content-Length': arr.byteLength }),
+          body: null,
+          arrayBuffer: function() { return Promise.resolve(arr.buffer || arr); },
+          blob:        function() { return Promise.resolve(new Blob([arr])); },
+          json:        function() { return Promise.reject(new Error('Not JSON')); },
+          text:        function() { return Promise.resolve(new TextDecoder().decode(arr)); }
+        };
+      });
+    }
+
     return originalFetch.apply(this, arguments);
   };
 
