@@ -1,4 +1,4 @@
-// Custom Data File + WASM Sub-Part Loader
+// Custom Data + WASM Sub-Part Loader
 // Repo: UGBONTOP/gtag-jsdliver
 (function() {
 
@@ -35,10 +35,10 @@
     CDN + '/Build.wasm.part3'
   ];
 
-  // Reassemble an array of URLs into a single Uint8Array
+  // Fetch multiple URLs and merge into one Uint8Array
   function fetchAndMerge(urls) {
     return Promise.all(urls.map(function(url) {
-      return fetch(url).then(function(r) {
+      return fetch(url, { _bypass: true }).then(function(r) {
         if (!r.ok) throw new Error('Failed: ' + url + ' (' + r.status + ')');
         return r.arrayBuffer().then(function(b) { return new Uint8Array(b); });
       });
@@ -51,7 +51,14 @@
     });
   }
 
-  // ── Data file loader ──────────────────────────────────────────────────────
+  // Pre-fetch wasm immediately so it's ready when Unity asks for it
+  console.log('Pre-fetching WASM parts...');
+  var wasmReady = fetchAndMerge(WASM_PARTS).then(function(arr) {
+    console.log('WASM assembled: ' + arr.length + ' bytes');
+    return arr;
+  });
+
+  // ── Data loader ───────────────────────────────────────────────────────────
 
   window.unityDataChunkLoader = function(url) {
     return new Promise(function(resolve, reject) {
@@ -79,17 +86,19 @@
         chunkIdxs.forEach(function(i) { final.set(chunks[i], offset); offset += chunks[i].length; });
         console.log('Data file merged successfully!');
         resolve(final);
-      }).catch(function(error) {
-        console.error('Error loading chunk parts:', error);
-        reject(error);
-      });
+      }).catch(reject);
     });
   };
 
-  // ── Intercept fetch for .data AND .wasm files ─────────────────────────────
+  // ── Intercept fetch ───────────────────────────────────────────────────────
 
   var originalFetch = window.fetch;
   window.fetch = function(url, options) {
+
+    // Let bypass requests through directly (used by fetchAndMerge above)
+    if (options && options._bypass) {
+      return originalFetch.call(this, url, options);
+    }
 
     // Intercept .data requests
     if (typeof url === 'string' && url.includes('.data') && !url.includes('.part')) {
@@ -107,11 +116,10 @@
       });
     }
 
-    // Intercept .wasm requests
+    // Intercept .wasm requests — return pre-fetched buffer
     if (typeof url === 'string' && url.includes('.wasm') && !url.includes('.part')) {
-      console.log('Intercepted .wasm request, reassembling from parts...');
-      return fetchAndMerge(WASM_PARTS).then(function(arr) {
-        console.log('WASM assembled: ' + arr.length + ' bytes');
+      console.log('Intercepted .wasm request, returning pre-fetched buffer...');
+      return wasmReady.then(function(arr) {
         return {
           ok: true, status: 200, statusText: 'OK',
           headers: new Headers({ 'Content-Type': 'application/wasm', 'Content-Length': arr.byteLength }),
@@ -125,6 +133,27 @@
     }
 
     return originalFetch.apply(this, arguments);
+  };
+
+  // Also override WebAssembly.instantiateStreaming since Unity tries that first
+  // before falling back to fetch
+  var _origInstStreaming = WebAssembly.instantiateStreaming;
+  WebAssembly.instantiateStreaming = function(source, imports) {
+    if (typeof source === 'string' || (source && source.url && source.url.includes('.wasm'))) {
+      console.log('WebAssembly.instantiateStreaming intercepted, using pre-fetched wasm...');
+      return wasmReady.then(function(arr) {
+        return WebAssembly.instantiate(arr.buffer || arr, imports);
+      });
+    }
+    // If source is already a Response or Promise<Response>, check if it's our fake one
+    return Promise.resolve(source).then(function(resp) {
+      if (resp && resp.ok && resp.headers && resp.headers.get('Content-Type') === 'application/wasm') {
+        return resp.arrayBuffer().then(function(buf) {
+          return WebAssembly.instantiate(buf, imports);
+        });
+      }
+      return _origInstStreaming ? _origInstStreaming(source, imports) : WebAssembly.instantiate(source, imports);
+    });
   };
 
 })();
