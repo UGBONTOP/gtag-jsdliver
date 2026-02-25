@@ -7,15 +7,24 @@
   var CHUNK_PARTS = {
     0: [
       CDN + '/Build.data.chunk0.part0',
-      CDN + '/Build.data.chunk0.part1'
+      CDN + '/Build.data.chunk0.part1',
+      CDN + '/Build.data.chunk0.part2',
+      CDN + '/Build.data.chunk0.part3',
+      CDN + '/Build.data.chunk0.part4'
     ],
     1: [
       CDN + '/Build.data.chunk1.part0',
-      CDN + '/Build.data.chunk1.part1'
+      CDN + '/Build.data.chunk1.part1',
+      CDN + '/Build.data.chunk1.part2',
+      CDN + '/Build.data.chunk1.part3',
+      CDN + '/Build.data.chunk1.part4'
     ],
     2: [
       CDN + '/Build.data.chunk2.part0',
-      CDN + '/Build.data.chunk2.part1'
+      CDN + '/Build.data.chunk2.part1',
+      CDN + '/Build.data.chunk2.part2',
+      CDN + '/Build.data.chunk2.part3',
+      CDN + '/Build.data.chunk2.part4'
     ]
   };
 
